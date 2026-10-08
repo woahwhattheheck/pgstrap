@@ -156,29 +156,37 @@ export const generate = async ({
     return
   }
 
-  await zg.generate({
-    db: {
-      connectionString: getConnectionStringFromEnv({
-        fallbackDefaults: {
-          database: defaultDatabase,
-        },
-      }),
-    },
-    schemas: Object.fromEntries(
-      schemas.map((s) => [
-        s,
-        {
-          include: "*",
-          exclude: [],
-        },
-      ]),
-    ),
-    outDir: dbDir,
-  })
+  // Explicit external-Postgres calls share the same environment-dependent
+  // generation gate. Otherwise they could read a concurrent embedded call's
+  // temporary loopback URL instead of the caller's configured database.
+  const releaseExternalEnv = await acquireGatewayEnv()
+  try {
+    await zg.generate({
+      db: {
+        connectionString: getConnectionStringFromEnv({
+          fallbackDefaults: {
+            database: defaultDatabase,
+          },
+        }),
+      },
+      schemas: Object.fromEntries(
+        schemas.map((s) => [
+          s,
+          {
+            include: "*",
+            exclude: [],
+          },
+        ]),
+      ),
+      outDir: dbDir,
+    })
 
-  await dumpTree({
-    targetDir: path.join(dbDir, "structure"),
-    defaultDatabase,
-    schemas,
-  })
+    await dumpTree({
+      targetDir: path.join(dbDir, "structure"),
+      defaultDatabase,
+      schemas,
+    })
+  } finally {
+    releaseExternalEnv()
+  }
 }
