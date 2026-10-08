@@ -137,3 +137,59 @@ console.log("expected-generation-failure")
     await fs.rm(cwd, { recursive: true, force: true })
   }
 }, 20000)
+
+
+test("serializes concurrent embedded generation without mixing schemas or leaking PG URLs", async () => {
+  const first = await createFixture()
+  const second = await createFixture()
+  const keys = ["POSTGRES_URI", "POSTGRES_URL", "PG_URI", "DATABASE_URL"] as const
+  const previous = keys.map((key) => process.env[key])
+  const firstTable = "first_offline_record"
+  const secondTable = "second_offline_record"
+
+  try {
+    await fs.writeFile(
+      path.join(first, "src/db/migrations/001_create_table.js"),
+      `exports.up = (pgm) => pgm.createTable('${firstTable}', { id: 'id' })`,
+    )
+    await fs.writeFile(
+      path.join(second, "src/db/migrations/001_create_table.js"),
+      `exports.up = (pgm) => pgm.createTable('${secondTable}', { id: 'id' })`,
+    )
+    for (const key of keys) process.env[key] = externalUrl
+    const { generate } = await import(generateUrl)
+
+    const options = (cwd: string) => ({
+      schemas: ["public"],
+      defaultDatabase: "not_used",
+      dbDir: path.join(cwd, "src/db"),
+      migrationsDir: path.join(cwd, "src/db/migrations"),
+    })
+    await Promise.all([
+      generate(options(first)),
+      generate(options(second)),
+    ])
+
+    const firstSchema = await fs.readFile(
+      path.join(first, "src/db/zapatos/schema.d.ts"), "utf8",
+    )
+    const secondSchema = await fs.readFile(
+      path.join(second, "src/db/zapatos/schema.d.ts"), "utf8",
+    )
+    expect(firstSchema).toContain(firstTable)
+    expect(firstSchema).not.toContain(secondTable)
+    expect(secondSchema).toContain(secondTable)
+    expect(secondSchema).not.toContain(firstTable)
+    for (const key of keys) expect(process.env[key]).toBe(externalUrl)
+  } finally {
+    keys.forEach((key, index) => {
+      const value = previous[index]
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    })
+    await Promise.all([
+      fs.rm(first, { recursive: true, force: true }),
+      fs.rm(second, { recursive: true, force: true }),
+    ])
+  }
+}, 30000)
