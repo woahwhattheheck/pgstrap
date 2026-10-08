@@ -13,7 +13,16 @@ const externalUrl = "postgres://unused:unused@127.0.0.1:1/not_used"
 async function runFixture(command: string[], cwd: string) {
   const child = Bun.spawn(command, {
     cwd,
-    env: { ...process.env, DATABASE_URL: externalUrl, NODE_ENV: "test" },
+    // All URI aliases deliberately point at an unreachable external server.
+    // PGlite must generate from migrations without using any of them.
+    env: {
+      ...process.env,
+      POSTGRES_URI: externalUrl,
+      POSTGRES_URL: externalUrl,
+      PG_URI: externalUrl,
+      DATABASE_URL: externalUrl,
+      NODE_ENV: "test",
+    },
     stdout: "pipe",
     stderr: "pipe",
   })
@@ -73,9 +82,10 @@ for (const mode of ["cli", "api"] as const) {
           path.join(cwd, "generate.ts"),
           `import { generate } from ${JSON.stringify(generateUrl)}
 import assert from "node:assert/strict"
-const before = process.env.DATABASE_URL
+const keys = ["POSTGRES_URI", "POSTGRES_URL", "PG_URI", "DATABASE_URL"] as const
+const before = keys.map(key => process.env[key])
 await generate({ schemas: ["public"], defaultDatabase: "not_used", dbDir: "./src/db" })
-assert.equal(process.env.DATABASE_URL, before)
+keys.forEach((key, index) => assert.equal(process.env[key], before[index]))
 `,
         )
         await runFixture([process.execPath, "generate.ts"], cwd)
@@ -101,7 +111,7 @@ assert.equal(process.env.DATABASE_URL, before)
   }, 20000)
 }
 
-test("failed embedded generation restores DATABASE_URL and releases the listener", async () => {
+test("failed embedded generation restores every connection URI and releases the listener", async () => {
   const cwd = await createFixture()
   try {
     // Force an output failure after migrations and listener startup.
@@ -110,12 +120,13 @@ test("failed embedded generation restores DATABASE_URL and releases the listener
       path.join(cwd, "failure.ts"),
       `import { generate } from ${JSON.stringify(generateUrl)}
 import assert from "node:assert/strict"
-const before = process.env.DATABASE_URL
+const keys = ["POSTGRES_URI", "POSTGRES_URL", "PG_URI", "DATABASE_URL"] as const
+const before = keys.map(key => process.env[key])
 await assert.rejects(
   generate({ schemas: ["public"], defaultDatabase: "not_used", dbDir: "./src/db", pglite: true }),
   /EEXIST|ENOTDIR/,
 )
-assert.equal(process.env.DATABASE_URL, before)
+keys.forEach((key, index) => assert.equal(process.env[key], before[index]))
 console.log("expected-generation-failure")
 `,
     )
