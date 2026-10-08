@@ -79,14 +79,27 @@ export const generate = async ({
       const port = (server.address() as import("node:net").AddressInfo).port
       const connectionString = `postgres://postgres:postgres@127.0.0.1:${port}/postgres`
 
-      // pg-schema-dump reads the URL from the environment. Keep the override
-      // scoped to generation, including failed type/structure writes.
-      const prevDbUrl = process.env.DATABASE_URL
+      // pg-schema-dump resolves multiple PostgreSQL URI environment aliases.
+      // Set them all to our ephemeral loopback gateway so an existing
+      // POSTGRES_URI or PG_URI cannot redirect offline generation to a real
+      // database. Restore every previous value even when output fails.
+      const connectionKeys = [
+        "POSTGRES_URI",
+        "POSTGRES_URL",
+        "PG_URI",
+        "DATABASE_URL",
+      ] as const
+      const previousUrls = connectionKeys.map((key) => process.env[key])
       restoreDbUrl = () => {
-        if (prevDbUrl === undefined) delete process.env.DATABASE_URL
-        else process.env.DATABASE_URL = prevDbUrl
+        connectionKeys.forEach((key, index) => {
+          const previous = previousUrls[index]
+          if (previous === undefined) delete process.env[key]
+          else process.env[key] = previous
+        })
       }
-      process.env.DATABASE_URL = connectionString
+      for (const key of connectionKeys) {
+        process.env[key] = connectionString
+      }
 
       await zg.generate({
         db: {
