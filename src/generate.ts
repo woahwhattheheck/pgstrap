@@ -8,6 +8,20 @@ import { dumpTree } from "pg-schema-dump"
 import path from "path"
 import { migrate } from "./migrate"
 
+// pg-schema-dump discovers its connection via process-wide environment keys.
+// Concurrent callers must never borrow each other's temporary PGlite URL.
+// Keep only the environment-dependent generation phase serial; migrations
+// and PGlite initialization can still happen concurrently.
+let gatewayEnvTurn: Promise<void> = Promise.resolve()
+function acquireGatewayEnv(): Promise<() => void> {
+  const previous = gatewayEnvTurn
+  let release!: () => void
+  gatewayEnvTurn = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  return previous.then(() => release)
+}
+
 export const generate = async ({
   schemas,
   defaultDatabase,
@@ -30,6 +44,7 @@ export const generate = async ({
     const sockets = new Set<import("node:net").Socket>()
     let server: import("node:net").Server | undefined
     let restoreDbUrl: (() => void) | undefined
+    let releaseGatewayEnv: (() => void) | undefined
 
     try {
       await migrate({
@@ -79,6 +94,7 @@ export const generate = async ({
       const port = (server.address() as import("node:net").AddressInfo).port
       const connectionString = `postgres://postgres:postgres@127.0.0.1:${port}/postgres`
 
+      releaseGatewayEnv = await acquireGatewayEnv()
       // pg-schema-dump resolves multiple PostgreSQL URI environment aliases.
       // Set them all to our ephemeral loopback gateway so an existing
       // POSTGRES_URI or PG_URI cannot redirect offline generation to a real
@@ -117,7 +133,11 @@ export const generate = async ({
         schemas,
       })
     } finally {
-      restoreDbUrl?.()
+      try {
+        restoreDbUrl?.()
+      } finally {
+        releaseGatewayEnv?.()
+      }
       try {
         // Failed clients may still hold sockets; close them before waiting
         // for the listener so a failed CLI invocation cannot hang on cleanup.
